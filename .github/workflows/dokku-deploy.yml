@@ -1,0 +1,114 @@
+name: Dokku Deploy
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: 'Dokku app name'
+        required: true
+        type: string
+      dockerfile:
+        description: 'Dockerfile path relative to repo root'
+        required: false
+        type: string
+      port:
+        description: 'App container port (e.g., 3000)'
+        required: false
+        type: string
+      ssh-host:
+        description: 'Dokku SSH host'
+        required: false
+        type: string
+        default: '100.94.15.7'
+      ssh-port:
+        description: 'Dokku SSH port'
+        required: false
+        type: string
+        default: '3022'
+      preview-domain-suffix:
+        description: 'Domain suffix for PR previews (e.g., l3s.me)'
+        required: false
+        type: string
+        default: 'l3s.me'
+    secrets:
+      SSH_PRIVATE_KEY:
+        required: true
+      TAILSCALE_OAUTH_CLIENT_ID:
+        required: true
+      TAILSCALE_OAUTH_SECRET:
+        required: true
+
+jobs:
+  deploy:
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - uses: Lucas-William-Bateson/actions/dokku-deploy@main
+        with:
+          app: ${{ inputs.app }}
+          ssh-host: ${{ inputs.ssh-host }}
+          ssh-port: ${{ inputs.ssh-port }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          dockerfile: ${{ inputs.dockerfile }}
+
+  preview:
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - uses: Lucas-William-Bateson/actions/dokku-deploy@main
+        id: deploy
+        with:
+          app: ${{ inputs.app }}-pr-${{ github.event.number }}
+          ssh-host: ${{ inputs.ssh-host }}
+          ssh-port: ${{ inputs.ssh-port }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          dockerfile: ${{ inputs.dockerfile }}
+          domains: ${{ inputs.app }}-pr-${{ github.event.number }}.${{ inputs.preview-domain-suffix }}
+          ports: http:80:${{ inputs.port }}
+
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🚀 Preview: https://${{ inputs.app }}-pr-${{ github.event.number }}.${{ inputs.preview-domain-suffix }}`
+            })
+
+  cleanup:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - uses: Lucas-William-Bateson/actions/dokku-cleanup@main
+        with:
+          app: ${{ inputs.app }}-pr-${{ github.event.number }}
+          ssh-host: ${{ inputs.ssh-host }}
+          ssh-port: ${{ inputs.ssh-port }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}

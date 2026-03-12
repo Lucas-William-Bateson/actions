@@ -1,8 +1,64 @@
 # Reusable GitHub Actions for Dokku
 
-Composite actions for deploying to [Dokku](https://dokku.com/) via `git push`.
+Composite actions and reusable workflows for deploying to [Dokku](https://dokku.com/).
 
-## Actions
+## Reusable Workflow
+
+### `dokku-deploy.yml`
+
+The recommended way to deploy. All deploy logic lives here — each repo just calls it with app-specific inputs.
+
+```yaml
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  schedule:
+    - cron: '0 6 * * 1' # Weekly rebuild
+
+jobs:
+  deploy:
+    uses: Lucas-William-Bateson/actions/.github/workflows/dokku-deploy.yml@main
+    with:
+      app: my-app
+      dockerfile: docker/Dockerfile
+      port: '3000'
+    secrets: inherit
+```
+
+That's it. The workflow handles:
+- **Push to main** → deploy to production
+- **Schedule** → redeploy (rebuild with fresh dependencies)
+- **PR opened/updated** → deploy preview at `my-app-pr-42.l3s.me`
+- **PR closed** → destroy preview app
+
+#### Inputs
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `app` | Yes | — | Dokku app name |
+| `dockerfile` | No | — | Dockerfile path relative to repo root |
+| `port` | No | — | App container port (for preview port mapping) |
+| `ssh-host` | No | `100.94.15.7` | Dokku SSH host (Tailscale IP) |
+| `ssh-port` | No | `3022` | Dokku SSH port |
+| `preview-domain-suffix` | No | `l3s.me` | Domain suffix for PR previews |
+
+#### Required Secrets (org-level)
+
+| Secret | Description |
+|--------|-------------|
+| `SSH_PRIVATE_KEY` | SSH private key authorized with Dokku |
+| `TAILSCALE_OAUTH_CLIENT_ID` | Tailscale OAuth client ID for runner networking |
+| `TAILSCALE_OAUTH_SECRET` | Tailscale OAuth secret |
+
+---
+
+## Composite Actions
+
+Lower-level building blocks used by the reusable workflow. You can also use these directly if you need custom logic.
 
 ### `dokku-deploy`
 
@@ -57,97 +113,28 @@ Destroy a Dokku app. Used for tearing down PR preview environments.
 
 ---
 
-## Example Workflows
+## Setup
 
-### Production deploy (push to main)
+### 1. Tailscale OAuth client
 
-```yaml
-name: Deploy
+Runners connect to the Mac Mini via Tailscale. Create an OAuth client:
 
-on:
-  push:
-    branches: [main]
+1. Go to [Tailscale Admin → Settings → OAuth clients](https://login.tailscale.com/admin/settings/oauth)
+2. Create a new client with `devices:write` scope
+3. Add the client ID and secret as org secrets (see below)
+4. Create an ACL tag `tag:ci` and allow it access to the Dokku host
 
-jobs:
-  deploy:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+### 2. GitHub org secrets
 
-      - uses: Lucas-William-Bateson/actions/dokku-deploy@main
-        with:
-          app: my-app
-          dockerfile: docker/Dockerfile
-```
+Set these at **GitHub Org Settings → Secrets and variables → Actions**:
 
-### PR preview apps
+| Secret | Value |
+|--------|-------|
+| `SSH_PRIVATE_KEY` | SSH private key authorized with Dokku (`ssh dokku-target`) |
+| `TAILSCALE_OAUTH_CLIENT_ID` | From step 1 |
+| `TAILSCALE_OAUTH_SECRET` | From step 1 |
 
-```yaml
-name: Preview
-
-on:
-  pull_request:
-    types: [opened, synchronize, reopened, closed]
-
-jobs:
-  deploy-preview:
-    if: github.event.action != 'closed'
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: Lucas-William-Bateson/actions/dokku-deploy@main
-        id: deploy
-        with:
-          app: my-app-pr-${{ github.event.number }}
-          dockerfile: docker/Dockerfile
-          domains: my-app-pr-${{ github.event.number }}.l3s.me
-          ports: http:80:3000
-
-      - uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `🚀 Preview: ${{ steps.deploy.outputs.url }}`
-            })
-
-  cleanup-preview:
-    if: github.event.action == 'closed'
-    runs-on: self-hosted
-    steps:
-      - uses: Lucas-William-Bateson/actions/dokku-cleanup@main
-        with:
-          app: my-app-pr-${{ github.event.number }}
-```
-
----
-
-## Prerequisites
-
-### Self-hosted runner
-
-A GitHub Actions runner must be running on the Dokku host (or a machine with SSH access to it).
-
-```bash
-# On the Mac Mini:
-mkdir -p ~/actions-runner && cd ~/actions-runner
-curl -o actions-runner.tar.gz -L https://github.com/actions/runner/releases/latest/download/actions-runner-osx-arm64-2.322.0.tar.gz
-tar xzf actions-runner.tar.gz
-./config.sh --url https://github.com/Lucas-William-Bateson --token <REGISTRATION_TOKEN>
-./svc.sh install
-./svc.sh start
-```
-
-Get the registration token from: **GitHub Org Settings → Actions → Runners → New self-hosted runner**
-
-### Repository access
+### 3. Repository access
 
 If this repo is private, allow other repos to use its actions:
 **Repo Settings → Actions → General → Access → Accessible from repositories in the organization**
