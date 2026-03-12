@@ -1,0 +1,97 @@
+name: 'Dokku Deploy'
+description: 'Deploy an application to Dokku via git push'
+
+inputs:
+  app:
+    description: 'Dokku app name'
+    required: true
+  ssh-host:
+    description: 'Dokku SSH host'
+    default: 'localhost'
+  ssh-port:
+    description: 'Dokku SSH port'
+    default: '3022'
+  ssh-private-key:
+    description: 'SSH private key for authentication (uses runner default key if omitted)'
+    required: false
+  dockerfile:
+    description: 'Dockerfile path relative to repo root (e.g., docker/Dockerfile)'
+    required: false
+  domains:
+    description: 'Space-separated domains to assign (replaces existing domains)'
+    required: false
+  ports:
+    description: 'Port mapping (e.g., http:80:3000)'
+    required: false
+  branch:
+    description: 'Target branch on Dokku remote'
+    default: 'main'
+
+outputs:
+  url:
+    description: 'Primary URL of the deployed app'
+    value: ${{ steps.deploy.outputs.url }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Configure SSH
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        if ! grep -q "Host dokku-target" ~/.ssh/config 2>/dev/null; then
+          cat >> ~/.ssh/config << EOF
+        Host dokku-target
+          HostName ${{ inputs.ssh-host }}
+          Port ${{ inputs.ssh-port }}
+          User dokku
+          StrictHostKeyChecking no
+          UserKnownHostsFile /dev/null
+          RequestTTY no
+        EOF
+          chmod 600 ~/.ssh/config
+        fi
+
+    - name: Configure SSH key
+      if: inputs.ssh-private-key != ''
+      shell: bash
+      env:
+        SSH_KEY: ${{ inputs.ssh-private-key }}
+      run: |
+        echo "$SSH_KEY" > ~/.ssh/dokku_deploy_key
+        chmod 600 ~/.ssh/dokku_deploy_key
+        if ! grep -q "IdentityFile ~/.ssh/dokku_deploy_key" ~/.ssh/config 2>/dev/null; then
+          sed -i'' -e '/Host dokku-target/a\
+          IdentityFile ~/.ssh/dokku_deploy_key' ~/.ssh/config
+        fi
+
+    - name: Create app if missing
+      shell: bash
+      run: ssh dokku-target apps:create ${{ inputs.app }} 2>/dev/null || true
+
+    - name: Set Dockerfile builder
+      if: inputs.dockerfile != ''
+      shell: bash
+      run: |
+        ssh dokku-target builder:set ${{ inputs.app }} selected dockerfile
+        ssh dokku-target builder-dockerfile:set ${{ inputs.app }} dockerfile-path ${{ inputs.dockerfile }}
+
+    - name: Set domains
+      if: inputs.domains != ''
+      shell: bash
+      run: ssh dokku-target domains:set ${{ inputs.app }} ${{ inputs.domains }}
+
+    - name: Set ports
+      if: inputs.ports != ''
+      shell: bash
+      run: ssh dokku-target ports:set ${{ inputs.app }} ${{ inputs.ports }}
+
+    - name: Deploy via git push
+      id: deploy
+      shell: bash
+      run: |
+        git remote remove dokku 2>/dev/null || true
+        git remote add dokku dokku-target:${{ inputs.app }}
+        git push dokku HEAD:refs/heads/${{ inputs.branch }} --force
+        URL=$(ssh dokku-target urls ${{ inputs.app }} 2>/dev/null | head -1 || echo "")
+        echo "url=$URL" >> $GITHUB_OUTPUT

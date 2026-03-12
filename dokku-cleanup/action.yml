@@ -1,0 +1,53 @@
+name: 'Dokku Cleanup'
+description: 'Destroy a Dokku app'
+
+inputs:
+  app:
+    description: 'Dokku app name to destroy'
+    required: true
+  ssh-host:
+    description: 'Dokku SSH host'
+    default: 'localhost'
+  ssh-port:
+    description: 'Dokku SSH port'
+    default: '3022'
+  ssh-private-key:
+    description: 'SSH private key for authentication (uses runner default key if omitted)'
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Configure SSH
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        if ! grep -q "Host dokku-target" ~/.ssh/config 2>/dev/null; then
+          cat >> ~/.ssh/config << EOF
+        Host dokku-target
+          HostName ${{ inputs.ssh-host }}
+          Port ${{ inputs.ssh-port }}
+          User dokku
+          StrictHostKeyChecking no
+          UserKnownHostsFile /dev/null
+          RequestTTY no
+        EOF
+          chmod 600 ~/.ssh/config
+        fi
+
+    - name: Configure SSH key
+      if: inputs.ssh-private-key != ''
+      shell: bash
+      env:
+        SSH_KEY: ${{ inputs.ssh-private-key }}
+      run: |
+        echo "$SSH_KEY" > ~/.ssh/dokku_deploy_key
+        chmod 600 ~/.ssh/dokku_deploy_key
+        if ! grep -q "IdentityFile ~/.ssh/dokku_deploy_key" ~/.ssh/config 2>/dev/null; then
+          sed -i'' -e '/Host dokku-target/a\
+          IdentityFile ~/.ssh/dokku_deploy_key' ~/.ssh/config
+        fi
+
+    - name: Destroy app
+      shell: bash
+      run: ssh dokku-target -- apps:destroy ${{ inputs.app }} --force
